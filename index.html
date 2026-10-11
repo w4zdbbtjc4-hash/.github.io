@@ -1,0 +1,217 @@
+【package.json】
+{
+  "name": "docs-share",
+  "version": "1.0.0",
+  "dependencies": {
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "sqlite3": "^5.1.6"
+  }
+}
+【server.js】
+const express = require('express');
+const multer = require('multer');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const fs = require('fs');
+const app = express();
+const PORT = 3000;
+app.use(express.static('public'));
+app.use('/uploads', express.static('uploads'));
+app.use(express.urlencoded({ extended: true }));
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+const db = new sqlite3.Database('./docs.db', (err) => {
+  if (err) {
+    console.error('数据库连接失败：', err.message);
+  }
+});
+db.run(`CREATE TABLE IF NOT EXISTS documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename TEXT,
+  originalName TEXT,
+  uploadTime DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const forbidExt = ['.exe','.bat','.cmd','.ps1','.sh'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (forbidExt.includes(ext)) {
+      return cb(new Error('不允许上传可执行程序'));
+    }
+    cb(null, true);
+  }
+});
+app.post('/upload', upload.single('docfile'), (req, res) => {
+  if (!req.file) {
+    return res.send(`<script>alert('上传失败，请选择合法文档');history.back()</script>`);
+  }
+  db.run(
+    `INSERT INTO documents (filename, originalName) VALUES (?, ?)`,
+    [req.file.filename, req.file.originalname],
+    (err) => {
+      if (err) {
+        return res.send(`<script>alert('数据库写入失败');history.back()</script>`);
+      }
+      res.redirect('/');
+    }
+  )
+});
+app.get('/api/list', (req, res) => {
+  db.all(`SELECT * FROM documents ORDER BY uploadTime DESC`, (err, rows) => {
+    res.json(rows);
+  })
+});
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public/index.html'));
+});
+app.listen(PORT, () => {
+  console.log(`服务已启动，端口：${PORT}`);
+})
+【public/index.html】
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>docs.yunkai.com 文档共享库</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        body {
+            max-width: 920px;
+            margin: 40px auto;
+            padding: 0 20px;
+            color: #222;
+            background-color: #f8f9fa;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 32px;
+            font-weight: 500;
+        }
+        .upload-card {
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 26px;
+            margin-bottom: 36px;
+        }
+        .upload-card h3 {
+            margin-bottom: 16px;
+            font-weight: 500;
+        }
+        .doc-list-wrap h3 {
+            margin-bottom: 14px;
+            font-weight: 500;
+        }
+        .doc-item {
+            background: #fff;
+            padding: 16px 18px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .doc-item:first-child {
+            border-radius: 8px 8px 0 0;
+        }
+        .doc-item:last-child {
+            border-radius: 0 0 8px 8px;
+            border-bottom: none;
+        }
+        a {
+            color: #2563eb;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        button {
+            padding: 7px 16px;
+            border: none;
+            background-color: #2563eb;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #1d4ed8;
+        }
+        input[type="file"] {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>文档共享库</h1>
+    <div class="upload-card">
+        <h3>上传文档（无需登录）</h3>
+        <form action="/upload" method="POST" enctype="multipart/form-data">
+            <input type="file" name="docfile" required>
+            <button type="submit">确认上传</button>
+        </form>
+        <p style="margin-top:12px; color:#666; font-size:14px">限制：单文件20MB，禁止上传程序类文件</p>
+    </div>
+    <div class="doc-list-wrap">
+        <h3>全部文档</h3>
+        <div id="docList"></div>
+    </div>
+    <script>
+        fetch('/api/list')
+            .then(res => res.json())
+            .then(list => {
+                const container = document.getElementById('docList');
+                if(list.length === 0){
+                    container.innerHTML = '<div style="padding:16px;background:#fff;border-radius:8px;color:#666">暂无文档</div>';
+                    return;
+                }
+                list.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'doc-item';
+                    div.innerHTML = `
+                        <span>${item.originalName}</span>
+                        <a href="/uploads/${item.filename}" target="_blank">在线打开</a>
+                    `
+                    container.appendChild(div);
+                })
+            })
+    </script>
+</body>
+</html>
+【nginx配置文件内容】
+server {
+    listen 80;
+    server_name docs.yunkai.com;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name docs.yunkai.com;
+    ssl_certificate /etc/letsencrypt/live/docs.yunkai.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/docs.yunkai.com/privkey.pem;
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
